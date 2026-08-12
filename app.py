@@ -23,7 +23,8 @@ uploaded_file = st.file_uploader("Upload an Image to Transmit", type=["jpg", "pn
 
 if uploaded_file is not None:
     # Read image
-    input_image = Image.open(uploaded_file).convert('RGB')
+    input_image = Image.open(uploaded_file).convert('L').resize((64, 64))
+    
     st.image(input_image, caption="Original Image (Transmitter Side)", width=300)
     
     # Channel BER Controls
