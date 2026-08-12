@@ -1,8 +1,10 @@
 import socket
 import numpy as np
 from PIL import Image
+import io
 
 CRC8_POLY = 0x07
+SECRET_KEY = 0xAA  # Encryption key
 
 def compute_crc8(data_bytes):
     crc = 0x00
@@ -15,48 +17,47 @@ def compute_crc8(data_bytes):
                 crc = (crc << 1) & 0xFF
     return crc
 
-def send_image(receiver_ip, image_path, port=5000, bytes_per_packet=8, ber=0.01):
-    # Load image and convert to grayscale matrix
-    img = Image.open(image_path).convert('L').resize((64, 64))  # Resized to 64x64 for speed
-    img_np = np.array(img, dtype=np.uint8)
-    height, width = img_np.shape
-    raw_bytes = img_np.flatten()
-
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    print(f"[SENDER] Connecting to Receiver at {receiver_ip}:{port}...")
-    client_socket.connect((receiver_ip, port))
-
-    # Send Image Header (Height, Width)
-    header = np.array([height, width], dtype=np.int32).tobytes()
-    client_socket.sendall(header)
-
-    print("[SENDER] Encoding packets with CRC-8 and transmitting...")
+def send_image(image_path, receiver_ip, port=5001, ber=0.015):
+    # Load and prepare image
+    img = Image.open(image_path).convert('RGB').resize((256, 256))
     
-    # Process and send packets
-    for i in range(0, len(raw_bytes), bytes_per_packet):
-        chunk = raw_bytes[i : i + bytes_per_packet]
+    # Save image to PNG bytes format
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    raw_bytes = buffer.getvalue()
+
+    # XOR Encrypt byte stream
+    encrypted_bytes = bytearray([b ^ SECRET_KEY for b in raw_bytes])
+
+    # Packetize (16 bytes data + 1 byte CRC)
+    packet_data = bytearray()
+    bytes_per_packet = 16
+
+    for i in range(0, len(encrypted_bytes), bytes_per_packet):
+        chunk = encrypted_bytes[i:i + bytes_per_packet]
+        if len(chunk) < bytes_per_packet:
+            chunk = chunk.ljust(bytes_per_packet, b'\x00')
         crc = compute_crc8(chunk)
-        
-        # Assemble Packet: [Payload Bytes ..., CRC Byte]
-        packet = bytearray(chunk)
-        packet.append(crc)
-        
-        # Inject Channel Noise (Optional Bit Flips based on BER)
-        if ber > 0:
-            bits = np.unpackbits(np.frombuffer(packet, dtype=np.uint8))
-            noise = np.random.rand(*bits.shape) < ber
-            corrupted_bits = bits ^ noise.astype(np.uint8)
-            packet = bytearray(np.packbits(corrupted_bits).tobytes())
+        packet_data.extend(chunk)
+        packet_data.append(crc)
 
-        client_socket.sendall(packet)
+    # Inject Bit-Flip Channel Noise
+    bitstream = np.unpackbits(np.frombuffer(packet_data, dtype=np.uint8))
+    noise_mask = np.random.rand(*bitstream.shape) < ber
+    corrupted_bitstream = bitstream ^ noise_mask.astype(np.uint8)
+    noisy_packet_data = np.packbits(corrupted_bitstream).tobytes()
 
-    client_socket.close()
-    print("[SENDER] Transmission Complete!")
+    # Transmit over Socket Connection
+    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    print(f"[*] Connecting to Receiver at {receiver_ip}:{port}...")
+    client.connect((receiver_ip, port))
+    
+    client.sendall(noisy_packet_data)
+    print("[+] Transmission finished successfully!")
+    client.close()
 
 if __name__ == "__main__":
-    # Replace with Device B's Local Wi-Fi IP address
-    RECEIVER_IP = "192.168.1.5" 
+    # Replace '192.168.1.X' with Receiver device's Wi-Fi IP address
+    RECEIVER_IP = "127.0.0.1" 
+    send_image("test.jpg", RECEIVER_IP)
     
-    # Send a sample image (Make sure you have an image file named test.png)
-    send_image(receiver_ip=RECEIVER_IP, image_path="test.png", ber=0.015)
-  
